@@ -3,4 +3,5 @@
 add_library(RRTMG_GridComp STATIC
     RRTMG_GridCompMod.F90
 )
-target_link_libraries(RRTMG_GridComp PUBLIC GeosCore)
+add_subdirectory(RRTMG)
+target_link_libraries(RRTMG_GridComp PUBLIC GeosCore PRIVATE RRTMGCore)
