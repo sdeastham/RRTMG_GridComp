@@ -18,6 +18,8 @@ module RRTMG_GridComp
    use ESMF
    use MAPL_Mod
    use pFlogger, only: logging, Logger
+   USE PARRRTM,      ONLY : NBNDLW
+   USE PARRRSW,      ONLY : NBNDSW
    
    implicit none
    private
@@ -34,7 +36,44 @@ module RRTMG_GridComp
 !
 ! !PUBLIC DATA MEMBERS:
 !
-!   logical, public :: import_mass_flux_from_extdata = .false.
+   ! NOTE: Changed to pointers to get inputs from HEMCO (bmy, 10/30/18)
+   ! NOTE: These should eventually go into fields of State_Chm
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_ALBDFNIR(:,:  )
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_ALBDFVIS(:,:  )
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_ALBDRNIR(:,:  )
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_ALBDRVIS(:,:  )
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_EMISS_01(:,:  )
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_EMISS_02(:,:  )
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_EMISS_03(:,:  )
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_EMISS_04(:,:  )
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_EMISS_05(:,:  )
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_EMISS_06(:,:  )
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_EMISS_07(:,:  )
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_EMISS_08(:,:  )
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_EMISS_09(:,:  )
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_EMISS_10(:,:  )
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_EMISS_11(:,:  )
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_EMISS_12(:,:  )
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_EMISS_13(:,:  )
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_EMISS_14(:,:  )
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_EMISS_15(:,:  )
+   REAL*4,  POINTER,     PUBLIC         :: MODIS_EMISS_16(:,:  )
+
+   !MCICA cloud variables now stored for reuse
+   !NOTE: These should eventually go into fields of State_Chm
+   REAL*8,  ALLOCATABLE, PUBLIC, TARGET :: CLDFMCL_LW(:,:,:,:)
+   REAL*8,  ALLOCATABLE, PUBLIC, TARGET :: CIWPMCL_LW(:,:,:,:)
+   REAL*8,  ALLOCATABLE, PUBLIC, TARGET :: CLWPMCL_LW(:,:,:,:)
+   REAL*8,  ALLOCATABLE, PUBLIC, TARGET :: TAUCMCL_LW(:,:,:,:)
+   REAL*8,  ALLOCATABLE, PUBLIC, TARGET :: CLDFMCL_SW(:,:,:,:)
+   REAL*8,  ALLOCATABLE, PUBLIC, TARGET :: CIWPMCL_SW(:,:,:,:)
+   REAL*8,  ALLOCATABLE, PUBLIC, TARGET :: CLWPMCL_SW(:,:,:,:)
+   REAL*8,  ALLOCATABLE, PUBLIC, TARGET :: TAUCMCL_SW(:,:,:,:)
+   REAL*8,  ALLOCATABLE, PUBLIC, TARGET :: SSACMCL   (:,:,:,:)
+   REAL*8,  ALLOCATABLE, PUBLIC, TARGET :: ASMCMCL   (:,:,:,:)
+   REAL*8,  ALLOCATABLE, PUBLIC, TARGET :: FSFCMCL   (:,:,:,:)
+   REAL*8,  ALLOCATABLE, PUBLIC, TARGET :: REICMCL   (:,:,:  )
+   REAL*8,  ALLOCATABLE, PUBLIC, TARGET :: RELQMCL   (:,:,:  )
 !
 ! !PRIVATE DATA MEMBERS:
 !
@@ -46,6 +85,29 @@ module RRTMG_GridComp
 !   integer :: correct_mass_flux_for_humidity
    
    class(Logger), pointer :: lgr => null()
+!
+! !REVISION HISTORY:
+!  18 Jun 2013 - D.A. Ridley - Initial version
+!  See https://github.com/geoschem/geos-chem for complete history
+!EOP
+!------------------------------------------------------------------------------
+!BOC
+!
+! !LOCAL VARIABLES:
+!
+   REAL*8,  ALLOCATABLE  :: LW_UFLUX (:,:,:)
+   REAL*8,  ALLOCATABLE  :: LW_DFLUX (:,:,:)
+   REAL*8,  ALLOCATABLE  :: SW_UFLUX (:,:,:)
+   REAL*8,  ALLOCATABLE  :: SW_DFLUX (:,:,:)
+   REAL*8,  ALLOCATABLE  :: LW_UFLUXC(:,:,:)
+   REAL*8,  ALLOCATABLE  :: LW_DFLUXC(:,:,:)
+   REAL*8,  ALLOCATABLE  :: SW_UFLUXC(:,:,:)
+   REAL*8,  ALLOCATABLE  :: SW_DFLUXC(:,:,:)
+ 
+   REAL*8  :: RRTMG_LMB(NBNDLW+NBNDSW)
+ 
+   INTEGER :: ID_AER_LMB0 (NBNDLW+NBNDSW)
+   INTEGER :: ID_AER_LMB1 (NBNDLW+NBNDSW)
 !
 ! !REMARKS:
 !  This file was adapted from a GEOS file developed at NASA GMAO.
@@ -92,10 +154,10 @@ module RRTMG_GridComp
 !
 ! !LOCAL VARIABLES:
 !
-      integer           :: STATUS
+      integer           :: STATUS, I
       type(ESMF_Config) :: CF
 
-      character(len=ESMF_MAXSTR) :: COMP_NAME, msg
+      character(len=ESMF_MAXSTR) :: COMP_NAME, msg, short_name, long_name
       character(len=ESMF_MAXSTR) :: IAm = 'SetServices'
 
       !================================
@@ -136,15 +198,55 @@ module RRTMG_GridComp
       ! Define Import state
       ! -----------------------------------------------------------------
       call lgr%debug('Adding import specs')
-!      call MAPL_AddImportSpec(gc, &
-!                              SHORT_NAME='PS1', &
-!                              LONG_NAME='pressure_at_surface_before_advection',&
-!                              UNITS='hPa', &
-!                              DIMS=MAPL_DimsHorzOnly, &
-!                              VLOCATION=MAPL_VLocationEdge, &
-!                              RC=STATUS)
-!      _VERIFY(STATUS)
+      call MAPL_AddImportSpec(gc, &
+                              SHORT_NAME='MODIS_ALBDFNIR', &
+                              LONG_NAME='diffuse_near-ir_albedo',&
+                              UNITS='-', &
+                              DIMS=MAPL_DimsHorzOnly, &
+                              VLOCATION=MAPL_VLocationEdge, &
+                              RC=STATUS)
+      _VERIFY(STATUS)
       
+      call MAPL_AddImportSpec(gc, &
+                              SHORT_NAME='MODIS_ALBDFVIS', &
+                              LONG_NAME='diffuse_visible_albedo',&
+                              UNITS='-', &
+                              DIMS=MAPL_DimsHorzOnly, &
+                              VLOCATION=MAPL_VLocationEdge, &
+                              RC=STATUS)
+      _VERIFY(STATUS)
+      
+      call MAPL_AddImportSpec(gc, &
+                              SHORT_NAME='MODIS_ALBDRNIR', &
+                              LONG_NAME='direct_near-ir_albedo',&
+                              UNITS='-', &
+                              DIMS=MAPL_DimsHorzOnly, &
+                              VLOCATION=MAPL_VLocationEdge, &
+                              RC=STATUS)
+      _VERIFY(STATUS)
+      
+      call MAPL_AddImportSpec(gc, &
+                              SHORT_NAME='MODIS_ALBDRVIS', &
+                              LONG_NAME='direct_visible_albedo',&
+                              UNITS='-', &
+                              DIMS=MAPL_DimsHorzOnly, &
+                              VLOCATION=MAPL_VLocationEdge, &
+                              RC=STATUS)
+      _VERIFY(STATUS)
+     
+      Do I=1, 16
+          write(short_name,'(a,I0.2)') 'MODIS_EMISSIVITY_', I
+          write(long_name,'(a,I0.2)') 'emissivity_in_modis_band_', I
+          call MAPL_AddImportSpec(gc, &
+                                  SHORT_NAME=trim(short_name), &
+                                  LONG_NAME=trim(long_name),&
+                                  UNITS='-', &
+                                  DIMS=MAPL_DimsHorzOnly, &
+                                  VLOCATION=MAPL_VLocationEdge, &
+                                  RC=STATUS)
+          _VERIFY(STATUS)
+      End Do 
+
       ! Define Export State
       ! -----------------------------------------------------------------
       call lgr%debug('Adding export specs')
@@ -381,9 +483,62 @@ module RRTMG_GridComp
       Iam = trim(COMP_NAME) // TRIM(Iam)
       call lgr%debug('RRTMG finalizing')
 
-      !if (.NOT. FV3_DynCoreIsRunning) then
-      !   call fv_end(FV_Atm, grids_on_my_pe, .false.)
-      !endif
+      !=================================================================
+      ! Nullify pointers
+      !=================================================================
+
+      ! Albedoes
+      MODIS_ALBDFNIR => NULL()
+      MODIS_ALBDFVIS => NULL()
+      MODIS_ALBDRNIR => NULL()
+      MODIS_ALBDRVIS => NULL()
+
+      ! Emissivity
+      MODIS_EMISS_01 => NULL()
+      MODIS_EMISS_02 => NULL()
+      MODIS_EMISS_03 => NULL()
+      MODIS_EMISS_04 => NULL()
+      MODIS_EMISS_05 => NULL()
+      MODIS_EMISS_06 => NULL()
+      MODIS_EMISS_07 => NULL()
+      MODIS_EMISS_08 => NULL()
+      MODIS_EMISS_09 => NULL()
+      MODIS_EMISS_10 => NULL()
+      MODIS_EMISS_11 => NULL()
+      MODIS_EMISS_12 => NULL()
+      MODIS_EMISS_13 => NULL()
+      MODIS_EMISS_14 => NULL()
+      MODIS_EMISS_15 => NULL()
+      MODIS_EMISS_16 => NULL()
+
+      !=================================================================
+      ! Deallocate surface radiation arrays
+      !=================================================================
+      IF ( ALLOCATED( LW_UFLUX        ) ) DEALLOCATE( LW_UFLUX        )
+      IF ( ALLOCATED( LW_DFLUX        ) ) DEALLOCATE( LW_DFLUX        )
+      IF ( ALLOCATED( SW_UFLUX        ) ) DEALLOCATE( SW_UFLUX        )
+      IF ( ALLOCATED( SW_DFLUX        ) ) DEALLOCATE( SW_DFLUX        )
+      IF ( ALLOCATED( LW_UFLUXC       ) ) DEALLOCATE( LW_UFLUXC       )
+      IF ( ALLOCATED( LW_DFLUXC       ) ) DEALLOCATE( LW_DFLUXC       )
+      IF ( ALLOCATED( SW_UFLUXC       ) ) DEALLOCATE( SW_UFLUXC       )
+      IF ( ALLOCATED( SW_DFLUXC       ) ) DEALLOCATE( SW_DFLUXC       )
+
+      !=================================================================
+      ! Deallocate MCICA cloud arrays
+      !=================================================================
+      IF ( ALLOCATED( CLDFMCL_LW     ) ) DEALLOCATE( CLDFMCL_LW       )
+      IF ( ALLOCATED( CIWPMCL_LW     ) ) DEALLOCATE( CIWPMCL_LW       )
+      IF ( ALLOCATED( CLWPMCL_LW     ) ) DEALLOCATE( CLWPMCL_LW       )
+      IF ( ALLOCATED( TAUCMCL_LW     ) ) DEALLOCATE( TAUCMCL_LW       )
+      IF ( ALLOCATED( CLDFMCL_SW     ) ) DEALLOCATE( CLDFMCL_SW       )
+      IF ( ALLOCATED( CIWPMCL_SW     ) ) DEALLOCATE( CIWPMCL_SW       )
+      IF ( ALLOCATED( CLWPMCL_SW     ) ) DEALLOCATE( CLWPMCL_SW       )
+      IF ( ALLOCATED( TAUCMCL_SW     ) ) DEALLOCATE( TAUCMCL_SW       )
+      IF ( ALLOCATED( SSACMCL        ) ) DEALLOCATE( SSACMCL          )
+      IF ( ALLOCATED( ASMCMCL        ) ) DEALLOCATE( ASMCMCL          )
+      IF ( ALLOCATED( FSFCMCL        ) ) DEALLOCATE( FSFCMCL          )
+      IF ( ALLOCATED( REICMCL        ) ) DEALLOCATE( REICMCL          )
+      IF ( ALLOCATED( RELQMCL        ) ) DEALLOCATE( RELQMCL          )
 
       call MAPL_GenericFinalize(GC, IMPORT, EXPORT, CLOCK, RC)
       VERIFY_(STATUS)
