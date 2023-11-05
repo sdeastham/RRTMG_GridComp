@@ -331,6 +331,7 @@ module RRTMG_GridComp
                              RC=STATUS )
       _VERIFY(STATUS)
       dt = ndt
+      call lgr%debug('RRTMG run beginning')
       
       ! Turn off timers
       call MAPL_TimerOff(ggState,"RUN")
@@ -378,6 +379,7 @@ module RRTMG_GridComp
       call ESMF_GridCompGet( GC, NAME=COMP_NAME, RC=STATUS )
       VERIFY_(STATUS)
       Iam = trim(COMP_NAME) // TRIM(Iam)
+      call lgr%debug('RRTMG finalizing')
 
       !if (.NOT. FV3_DynCoreIsRunning) then
       !   call fv_end(FV_Atm, grids_on_my_pe, .false.)
